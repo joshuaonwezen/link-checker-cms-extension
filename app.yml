@@ -1,0 +1,26 @@
+meta:
+  app_id: cms_link_checker
+  display_name: Link checker
+  version: 0.0.1-dev.0
+  vendor: optimizely
+  summary: Check every link on the page open in the editor - broken pages, deleted content and links the site silently hides.
+  support_url: https://www.optimizely.com
+  contact_email: joshua.onwezen@optimizely.com
+  categories:
+    - Testing & Utilities
+  availability:
+    - all
+
+runtime: node22-cms-ext
+
+functions:
+  cms_extension:
+    entry_point: CmsUiExtension
+    description: Reads the open version (CMS REST), resolves internal links (Graph) and checks each one on the site.
+    accepts: cms_ui_extension
+
+ui_extensions:
+  sidebar:
+    - name: link-checker
+      entry_point: LinkChecker
+      display_name: Link checker

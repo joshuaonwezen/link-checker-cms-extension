@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Link checker</title>
+  <!-- Same family as the other extension icons: dark green tile, lime + mint shapes, extruded shadow -->
+  <rect width="64" height="64" rx="14" fill="#0E3A29"/>
+  <g fill="none" stroke="#051F15" stroke-width="6" stroke-linecap="round" transform="translate(2.5 2.5)">
+    <path d="M28 36 a8 8 0 0 1 0 -11.3 l6 -6 a8 8 0 0 1 11.3 11.3 l-3 3"/>
+    <path d="M36 28 a8 8 0 0 1 0 11.3 l-6 6 a8 8 0 0 1 -11.3 -11.3 l3 -3"/>
+  </g>
+  <path d="M28 36 a8 8 0 0 1 0 -11.3 l6 -6 a8 8 0 0 1 11.3 11.3 l-3 3" fill="none" stroke="#E4F0DA" stroke-width="6" stroke-linecap="round"/>
+  <path d="M36 28 a8 8 0 0 1 0 11.3 l-6 6 a8 8 0 0 1 -11.3 -11.3 l3 -3" fill="none" stroke="#ABFF45" stroke-width="6" stroke-linecap="round"/>
+</svg>
