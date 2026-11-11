@@ -30,6 +30,7 @@ const PUBLISHED_ITEM = /* GraphQL */ `
     _Content(where: {_metadata: {key: {eq: $key}}}, locale: $locale, limit: 1) {
       items {
         _metadata {
+          displayName
           url {
             default
           }
@@ -44,11 +45,13 @@ export interface PublishedItem {
   /** The page's URL on the site; null for blocks and media. */
   url: string | null;
   isPage: boolean;
+  displayName?: string;
 }
 
 /** The published item in `locale` (or a locale-less one, like media), or null when visitors can't see it. */
 export async function publishedItem(cfg: GraphConfig, key: string, locale: string): Promise<PublishedItem | null> {
-  const data = await graphQuery<{_Content?: {items?: Array<{_metadata?: {url?: {default?: string | null}; types?: string[]}}>}}>(
+  type Meta = {displayName?: string | null; url?: {default?: string | null}; types?: string[]};
+  const data = await graphQuery<{_Content?: {items?: Array<{_metadata?: Meta}>}}>(
     cfg,
     PUBLISHED_ITEM,
     {key, locale: [graphLocale(locale), 'NEUTRAL']},
@@ -56,7 +59,7 @@ export async function publishedItem(cfg: GraphConfig, key: string, locale: strin
   const meta = data._Content?.items?.[0]?._metadata;
   if (!meta) return null;
   const isPage = (meta.types ?? []).some((t) => t === '_Page' || t === '_Experience');
-  return {url: meta.url?.default ?? null, isPage};
+  return {url: meta.url?.default ?? null, isPage, displayName: meta.displayName || undefined};
 }
 
 /** Throws ApiError when the key is rejected. */

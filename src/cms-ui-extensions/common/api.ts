@@ -12,14 +12,17 @@ export class CallError extends Error {
   }
 }
 
+// Shown to editors: plain words, and an admin to ask when only the settings can fix it.
 const FALLBACK_MESSAGES: Record<string, string> = {
   not_configured: 'The app is missing settings.',
-  cms_unauthorized: 'The CMS rejected the API client. Check it in the app settings.',
-  cms_rate_limited: 'The CMS is rate limiting requests. Try again in a moment.',
-  graph_unauthorized: 'Graph rejected the single key. Check it in the app settings.',
-  internal_error: 'Something went wrong in the extension backend.',
-  backend_unreachable: 'The extension backend failed before answering. The app logs (ocp app logs) have the details.',
+  cms_unauthorized: "The CMS turned down the app's API client. Ask a CMS admin to check the app's settings.",
+  cms_rate_limited: 'The CMS is busy. Try again in a moment.',
+  graph_unauthorized: "The app's key for reading published content was turned down. Ask a CMS admin to check the app's settings.",
+  graph_rate_limited: 'Too many requests at once. Try again in a moment.',
+  internal_error: 'Something went wrong in the link checker. Try again.',
+  backend_unreachable: 'The link checker stopped before answering. Try again, and if it keeps happening, tell a CMS admin.',
 };
+const GENERIC_MESSAGE = "The link checker couldn't finish. Try again in a moment.";
 
 /** Calls one backend action; resolves with its result or throws CallError. */
 export async function call<A extends ActionName>(
@@ -35,9 +38,9 @@ export async function call<A extends ActionName>(
   const envelope = response.data as Envelope<ActionResults[A]> | undefined;
   if (envelope && typeof envelope === 'object' && 'ok' in envelope) {
     if (envelope.ok) return envelope.result;
-    throw new CallError(envelope.error, envelope.message || FALLBACK_MESSAGES[envelope.error] || envelope.error);
+    throw new CallError(envelope.error, envelope.message || FALLBACK_MESSAGES[envelope.error] || GENERIC_MESSAGE);
   }
-  throw new CallError('request_failed', `The extension backend answered HTTP ${response.statusCode}.`);
+  throw new CallError('request_failed', GENERIC_MESSAGE);
 }
 
 export function errorMessage(error: unknown): string {

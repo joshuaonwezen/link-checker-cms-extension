@@ -13,20 +13,35 @@ It is built for `optimizely-nextjs-demo`, where an internal link in a `type: "ur
 - Checks each one:
   - **Content links** (`cms://content/{key}`): resolved through Graph, so only published content counts, then opened on the site. Deleted content and content that isn't published in the page's locale are both **broken**, because the site hides those links.
   - **References**: they must exist and be published.
-  - **Site paths**: opened on the site with redirects off. A 404 is broken. A redirect to a different page is "worth a look" (link to the target directly). Trailing-slash and case redirects are followed.
-  - **External URLs**: `HEAD`, falling back to `GET`. A 401/403/429 means "couldn't check", not broken.
-- Shows the results worst first, each with where it sits ("Product Cards > Savings Card > Link URL"), the link text and a fix hint. Up to 60 links are checked per run, within a time budget.
+  - **Site paths**: opened on the site with redirects off. A 404 is broken. A redirect to a different page is "worth a look" (link to the target directly). Trailing-slash and case redirects are followed. Paths are appended to the site's origin, never resolved against it, and every request must stay on that origin, so `//host/x`, `/\host/x` or an absolute Graph `url.default` can't turn a site check into a request to another host. A Graph URL on another host is checked as an external link.
+  - **External URLs**: `HEAD`, falling back to `GET`, through the outbound guard below. A 401/403/429 means "couldn't check", not broken.
+- Shows the results worst first: broken and "worth a look" open, "couldn't check" and "fine" collapsed. Each row leads with the link text or the target's name (never a `cms://` key), then the address, where it sits ("Product Cards > Savings Card > Link URL"), a status in plain words ("Works", "Page not found", "Redirects to /x", "Not published", "Deleted") and a fix hint. **Check again** sits at the top: saving a draft keeps the version, so the panel doesn't re-run on its own. Up to 60 links are checked per run, within a 25-second budget that also cuts the shared-block step short.
+
+## Outbound guard (SSRF)
+External links come from content, and the sidebar opens them from the app's backend on every panel open. `src/backend/lib/outbound.ts` stops that being used to probe internal hosts or cloud metadata:
+- only `http:`/`https:`, only the default ports (80/443), no user name or password in the URL;
+- no IP literals, and no `localhost`, `*.localhost`, `*.local`, `*.internal` or single-label host names;
+- the host is resolved (`dns.lookup`, all addresses) and refused if **any** address is loopback, private, link-local, CGNAT, unspecified, multicast or reserved: 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.168/16, 198.18/15, 224/4 and above, the documentation ranges, and for IPv6 anything outside global unicast (`::`, `::1`, `fc00::/7`, `fe80::/10`, `ff00::/8`) plus IPv4-mapped, NAT64 and 6to4 forms of a private IPv4 address;
+- redirects are off (`redirect: 'manual'`); up to 5 hops are followed by hand, each `Location` screened again;
+- a refused URL is reported as "Not checked: points to a private address" (or the reason), not as an error;
+- the external host names checked and refused are logged (host only, never the path).
+
+The same guard runs when the Site URL is saved, which must be `https://` with a public host name.
+
+Residual risk: **DNS rebinding.** The guard resolves the host, then `fetch` resolves it again; a hostile DNS server could answer a public address the first time and a private one the second. Pinning the checked address into the connection needs a custom undici dispatcher, which the runtime's built-in `fetch` doesn't expose. Only a status code ever comes back, never a response body.
 
 ## Platform constraints (CMS UI extensions beta, SDK 1.1.0)
 - **The extension context is only `{key, version, locale, publicUrl}`.** The backend reads the version itself.
-- **Variation versions can't be read:** the CMS API returns their blocks without values. On a variation, the sidebar says so and offers to check the original page.
+- **Variation versions can't be read:** the CMS API returns their blocks without values. On a variation, the sidebar says so in plain words and offers to check the original page.
 - **Extensions get no CMS token.** The app stores a CMS API client in its settings.
 - **Reading settings an install never saved throws** in the production runtime. `readSection` treats that as empty.
 
 ## Settings
-- **Site:** the front end for this CMS instance, e.g. `https://optimizely-onboarding.vercel.app` for joshCMS.
+- **Site:** the public `https://` address of the front end for this CMS instance. IP addresses, private host names and non-standard ports are refused, and so is a name or redirect that leads to a private address.
 - **Optimizely Graph:** the instance's single key (published content only, which is what visitors see).
 - **CMS API client:** read access is enough.
+
+Editors never see these names: when something is missing, the sidebar lists it in plain words and asks them to contact a CMS admin.
 
 ## Develop
 
@@ -48,10 +63,12 @@ LINKS_LIVE_OUT=/tmp/links.json yarn vitest run tests/live
 
 | Path | What |
 |---|---|
-| `src/backend/functions/CmsUiExtension.ts` | The `checkLinks` action, using the `{ok, result}` envelope |
+| `src/backend/functions/CmsUiExtension.ts` | The `checkLinks` action, using the `{ok, result}` envelope; upstream error detail goes to the logs, not the editor |
+| `src/backend/lib/validate.ts` | One parser per action: allow-listed key, version and locale, unknown fields dropped |
+| `src/backend/lib/outbound.ts` | The outbound guard for every request to a URL from content |
 | `src/backend/lib/collect.ts` | Finds links and references in a version: pure, no network |
 | `src/backend/lib/checker.ts` | Reads the version and shared blocks, then checks each link |
-| `src/backend/lib/verdict.ts` | HTTP answer → broken / worth a look / couldn't check / fine |
+| `src/backend/lib/verdict.ts` | HTTP answer → broken / worth a look / couldn't check / fine, in editor wording |
 | `src/backend/lib/cms.ts`, `graph.ts` | CMS REST and Graph clients |
 | `src/backend/lifecycle/Lifecycle.ts` | Validates each settings section before saving |
 | `src/shared/` | The UI ↔ backend contract |

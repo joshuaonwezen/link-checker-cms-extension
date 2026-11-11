@@ -2,6 +2,7 @@ import {logger, storage, ValueHash} from '@zaiusinc/app-sdk';
 
 import type {CmsConfig} from './cms';
 import type {GraphConfig} from './graph';
+import {refusal} from './outbound';
 
 // Section keys match forms/settings.yml.
 // Type aliases, not interfaces: the settings store requires an index-signature-compatible shape.
@@ -27,12 +28,17 @@ export interface LoadedSettings {
 
 export type LoadedConfig = {ok: true; config: LoadedSettings} | {ok: false; missing: string[]};
 
-/** https://host[/path] without a trailing slash, or null. */
+/**
+ * https://host[/path] without a trailing slash, or null. Only https, and only a public host
+ * name: no IP address, localhost, *.local or *.internal, port or credentials. Whether the name
+ * resolves to a public address is checked when the setting is saved.
+ */
 export function normalizeSiteUrl(raw: string | undefined): string | null {
   const value = raw?.trim() ?? '';
-  if (!/^https?:\/\/[^\s/]+/i.test(value)) return null;
+  if (!/^https:\/\/[^\s/]+/i.test(value)) return null;
   try {
     const url = new URL(value);
+    if (refusal(url)) return null;
     return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
   } catch {
     return null;
@@ -64,11 +70,12 @@ export async function loadConfig(): Promise<LoadedConfig> {
   const clientId = cms.clientId?.trim() ?? '';
   const clientSecret = cms.clientSecret?.trim() ?? '';
 
+  // Editors read this list, so it names what is missing in plain words.
   const missing = [
-    !siteUrl && 'Site URL',
-    !singleKey && 'Graph single key',
-    !clientId && 'CMS client ID',
-    !clientSecret && 'CMS client secret',
+    !siteUrl && 'the site address',
+    !singleKey && 'the key for reading published content',
+    !clientId && 'the CMS API client ID',
+    !clientSecret && 'the CMS API client secret',
   ].filter((m): m is string => Boolean(m));
 
   return missing.length > 0

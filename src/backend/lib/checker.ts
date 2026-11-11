@@ -1,27 +1,21 @@
+import {logger} from '@zaiusinc/app-sdk';
+
 import type {CheckedLink, CheckOutcome, FoundLink} from '../../shared/types';
 import {CmsClient, type CmsItem, type CmsVersion} from './cms';
 import {collectLinks, contentKeyOf, contentTypesIn, type TypeInfo} from './collect';
+import {ActionError} from './errors';
 import {publishedItem, type PublishedItem} from './graph';
+import {guardedFetch, USER_AGENT, type Answer} from './outbound';
 import type {LoadedSettings} from './settings';
-import {byVerdict, isCosmeticRedirect, judgeExternal, judgeInternal, type Answer, type Judgement} from './verdict';
-
-export class ActionError extends Error {
-  public readonly code: string;
-
-  public constructor(code: string, message: string) {
-    super(message);
-    this.name = 'ActionError';
-    this.code = code;
-  }
-}
+import {byVerdict, isCosmeticRedirect, judgeExternal, judgeInternal, type Judgement} from './verdict';
 
 const MAX_LINKS = 60;
 const MAX_SHARED_BLOCKS = 25;
 const CONCURRENCY = 6;
 const REQUEST_TIMEOUT_MS = 8_000;
-// Stay well inside the function's time limit: links not started by then are reported unchecked.
+// Stay well inside the function's time limit, counted from the start of the run: shared
+// blocks and links not started by then are skipped, and the links reported unchecked.
 const BUDGET_MS = 25_000;
-const USER_AGENT = 'Mozilla/5.0 (compatible; OptimizelyCmsLinkChecker/1.0)';
 const KEY = /^[0-9a-f]{32}$/i;
 const MAX_COSMETIC_HOPS = 3;
 
@@ -63,14 +57,45 @@ class Types {
   public readonly lookup = (key: string | undefined): TypeInfo | undefined => (key ? this.known.get(key) ?? undefined : undefined);
 }
 
-async function answer(url: string, init: RequestInit): Promise<Answer> {
+function parseUrl(href: string, base?: URL): URL | null {
   try {
-    const res = await fetch(url, {...init, headers: {'User-Agent': USER_AGENT}, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)});
-    void res.body?.cancel();
+    return new URL(href, base);
+  } catch {
+    return null;
+  }
+}
+
+/** "Dutch" for nl, falling back to the code. */
+function languageName(locale: string): string {
+  try {
+    return new Intl.DisplayNames(['en'], {type: 'language'}).of(locale.replace(/_/g, '-')) ?? locale;
+  } catch {
+    return locale;
+  }
+}
+
+/** One request to the configured site (never anywhere else), redirects off. */
+async function answerFromSite(url: URL): Promise<Answer> {
+  try {
+    const res = await fetch(url, {
+      redirect: 'manual',
+      headers: {'User-Agent': USER_AGENT},
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    void res.body?.cancel().catch(() => undefined);
     return {status: res.status, location: res.headers.get('location')};
   } catch (error) {
     return {failure: error instanceof Error && error.name === 'TimeoutError' ? 'timeout' : 'error'};
   }
+}
+
+/**
+ * A site path as a URL on the site: appended to the origin, never resolved against it, so a
+ * path that starts "//host" or "/\host" stays on the site instead of naming another host.
+ */
+export function sitePage(site: URL, path: string): URL | null {
+  const url = parseUrl(`${site.origin}${path.startsWith('/') ? '' : '/'}${path}`);
+  return url && url.origin === site.origin ? url : null;
 }
 
 /** A target as stored, classified for checking. */
@@ -83,19 +108,13 @@ export function classify(target: string, siteUrl: string):
   const key = contentKeyOf(target);
   if (key) return {type: 'content', key};
   if (/^cms:\/\//i.test(target)) return {type: 'dam'};
-  if (target.startsWith('//')) return {type: 'external', url: `https:${target}`};
-  if (target.startsWith('/')) return {type: 'internal', path: target};
-  if (/^https?:\/\//i.test(target)) {
-    const site = new URL(siteUrl);
-    try {
-      const url = new URL(target);
-      if (url.origin === site.origin) return {type: 'internal', path: `${url.pathname}${url.search}`};
-    } catch {
-      return {type: 'relative'};
-    }
-    return {type: 'external', url: target};
-  }
-  return {type: 'relative'};
+  if (!/^(\/|https?:\/\/)/i.test(target)) return {type: 'relative'};
+  // Resolved the way a browser on the site would: "//host/x" and "/\host/x" leave the site.
+  const site = new URL(siteUrl);
+  const url = parseUrl(target, site);
+  if (!url) return {type: 'relative'};
+  if (url.origin === site.origin) return {type: 'internal', path: `${url.pathname}${url.search}`};
+  return {type: 'external', url: url.href};
 }
 
 export interface Checker {
@@ -104,34 +123,59 @@ export interface Checker {
 
 export function createChecker(cfg: LoadedSettings): Checker {
   const cms = new CmsClient(cfg.cms);
+  const site = new URL(cfg.siteUrl);
+  const hosts = {checked: new Set<string>(), refused: new Set<string>()};
   const item = once((key: string) => cms.getItem(key));
   const published = once((id: string) => {
     const [key, locale] = id.split('|');
     return publishedItem(cfg.graph, key, locale);
   });
-  const internal = once(async (path: string) => {
+  const draftName = once(async (id: string) => {
+    const [key, locale] = id.split('|');
+    try {
+      return (await cms.listVersions(key, locale, 1))[0]?.displayName || undefined;
+    } catch {
+      // Only a label: never fail the run over it.
+      return undefined;
+    }
+  });
+
+  /** `href` (a path or a URL) on the configured site, or null when it leads anywhere else. */
+  const onSite = (href: string): URL | null => {
+    const url = parseUrl(href, site);
+    return url && url.origin === site.origin ? url : null;
+  };
+
+  const internal = once(async (path: string): Promise<Judgement> => {
+    const start = sitePage(site, path);
+    if (!start) return {verdict: 'unchecked', status: "Not checked: the address can't be read"};
+    let current = start;
     // Follow slash and case redirects (/en/about/ -> /en/about): what counts is where they land.
-    let current = path;
     for (let hop = 0; ; hop++) {
-      const result = await answer(`${cfg.siteUrl}${current}`, {redirect: 'manual'});
+      const here = `${current.pathname}${current.search}`;
+      const result = await answerFromSite(current);
       const location = 'status' in result && result.status >= 300 && result.status < 400 ? result.location : null;
-      if (!location || hop === MAX_COSMETIC_HOPS || !isCosmeticRedirect(current, location)) return judgeInternal(current, result);
-      const next = new URL(location, cfg.siteUrl);
-      current = `${next.pathname}${next.search}`;
+      const next = location ? parseUrl(location, current) : null;
+      if (!location || !next || next.origin !== site.origin || hop === MAX_COSMETIC_HOPS || !isCosmeticRedirect(here, location)) {
+        return judgeInternal(here, result, site.origin);
+      }
+      current = next;
     }
   });
   const external = once(async (url: string) => {
-    let result = await answer(url, {method: 'HEAD', redirect: 'follow'});
+    const options = {timeoutMs: REQUEST_TIMEOUT_MS, onRequest: (u: URL) => hosts.checked.add(u.hostname)};
+    let result = await guardedFetch(url, 'HEAD', options);
     // Plenty of sites refuse HEAD; ask again the way a browser would.
-    if ('status' in result && [400, 403, 405, 501].includes(result.status)) result = await answer(url, {redirect: 'follow'});
+    if ('status' in result && [400, 403, 405, 501].includes(result.status)) result = await guardedFetch(url, 'GET', options);
+    if ('refused' in result) hosts.refused.add(result.host);
     return judgeExternal(result);
   });
 
-  const openUrl = (path: string) => `${cfg.siteUrl}${path}`;
-
-  async function judgePage(path: string, resolvedFrom?: string): Promise<Judgement & {openUrl: string}> {
+  async function judgePage(path: string): Promise<Judgement & {openUrl?: string}> {
     const j = await internal(path);
-    return {...j, resolved: j.resolved ?? resolvedFrom, openUrl: openUrl(j.resolved ?? path)};
+    // A redirect off the site resolves to a full URL; everything else is a site path.
+    const openUrl = j.resolved && !j.resolved.startsWith('/') ? j.resolved : sitePage(site, j.resolved ?? path)?.href;
+    return {...j, openUrl};
   }
 
   async function judgeContent(link: FoundLink, key: string, locale: string): Promise<Partial<CheckedLink> & Judgement> {
@@ -140,27 +184,38 @@ export function createChecker(cfg: LoadedSettings): Checker {
       return isLink
         ? {
             verdict: 'broken',
-            status: 'Points at deleted content',
-            hint: "The site renders nothing for this link. Pick the target again, or remove the link.",
+            status: 'Deleted',
+            hint: "It points at content that was deleted, so the site doesn't show the link. Pick the target again, or remove the link.",
           }
-        : {verdict: 'broken', status: 'Deleted content', hint: 'This leaves a gap on the page. Remove it, or pick other content.'};
+        : {verdict: 'broken', status: 'Deleted', hint: 'This leaves a gap on the page. Remove it, or pick other content.'};
     }
     const live: PublishedItem | null = await published(`${key}|${locale}`);
     if (!live) {
+      const name = await draftName(`${key}|${locale}`);
+      const language = languageName(locale);
       return isLink
         ? {
             verdict: 'broken',
-            status: `Target not published in ${locale}`,
-            hint: "The site hides links to content visitors can't see. Publish the target, or pick another page.",
+            status: 'Not published',
+            name,
+            hint: `The site hides links to pages visitors can't see. Publish it in ${language}, or link to another page.`,
           }
-        : {verdict: 'warning', status: `Not published in ${locale}`, hint: "Visitors don't see it until it is published."};
+        : {verdict: 'warning', status: 'Not published', name, hint: `Visitors don't see it until it is published in ${language}.`};
     }
+    const name = live.displayName;
     if (live.url && (isLink || live.isPage)) {
-      const page = await judgePage(live.url, live.url);
-      return {...page, status: `${live.url}: ${page.status}`};
+      const url = onSite(live.url);
+      if (url) {
+        const path = `${url.pathname}${url.search}`;
+        return {...(await judgePage(path)), name, resolved: path};
+      }
+      // The CMS gives the page an address on another host, and the site links there as is.
+      const href = parseUrl(live.url)?.href;
+      if (!href) return {verdict: 'unchecked', status: "Not checked: the page's address can't be read", name};
+      return {...(await external(href)), name, resolved: href, openUrl: href};
     }
-    if (isLink) return {verdict: 'warning', status: 'Links to an item with no URL', hint: 'Only pages can be linked to.'};
-    return {verdict: 'ok', status: 'Published'};
+    if (isLink) return {verdict: 'warning', status: 'Not a page', name, hint: 'Only pages can be linked to. Pick a page instead.'};
+    return {verdict: 'ok', status: 'Published', name};
   }
 
   async function judge(link: FoundLink, locale: string, deadline: number): Promise<CheckedLink> {
@@ -176,19 +231,20 @@ export function createChecker(cfg: LoadedSettings): Checker {
       case 'external':
         return {...link, ...(await external(target.url)), openUrl: target.url};
       case 'dam':
-        return {...link, verdict: 'ok', status: 'DAM asset, served by the DAM'};
+        return {...link, verdict: 'ok', status: 'From the asset library'};
       case 'relative':
-        return {...link, verdict: 'warning', status: 'Relative link', hint: 'Start it with / or https:// so it works on every page.'};
+        return {...link, verdict: 'warning', status: 'Incomplete address', hint: 'Start it with / or https:// so it works on every page.'};
     }
   }
 
-  async function sharedBlockLinks(found: FoundLink[], locale: string, types: Types) {
+  async function sharedBlockLinks(found: FoundLink[], locale: string, types: Types, deadline: number) {
     const keys = [...new Set(found.filter((l) => l.kind === 'reference').map((l) => contentKeyOf(l.target)))]
       .filter((k): k is string => Boolean(k))
       .slice(0, MAX_SHARED_BLOCKS);
     let blocks = 0;
     const links = (
       await mapLimit(keys, CONCURRENCY, async (key) => {
+        if (Date.now() > deadline) return [];
         const it: CmsItem | null = await item(key);
         if (!it?.contentType) return [];
         await types.load([it.contentType]);
@@ -208,37 +264,43 @@ export function createChecker(cfg: LoadedSettings): Checker {
 
   return {
     async checkLinks({key, version: requested, locale: editorLocale}) {
-      if (!KEY.test(key)) throw new ActionError('invalid_key', 'That is not a content key.');
+      const deadline = Date.now() + BUDGET_MS;
+      if (!KEY.test(key)) throw new ActionError('invalid_input', 'key: not a CMS content key.');
       const it = await item(key);
-      if (!it) throw new ActionError('not_found', "The CMS has no item with this key - it may have just been deleted.");
+      if (!it) throw new ActionError('not_found', 'This item no longer exists in the CMS - it may have just been deleted.');
       const locales = (it.locales ?? []).filter(Boolean);
       if (locales.length === 0) return {kind: 'nothing', reason: 'Images, media and folders have no links to check.'};
       const locale = locales.includes(editorLocale) ? editorLocale : it.primaryLocale || locales[0];
 
       let version: CmsVersion | null = requested ? await cms.getVersion(key, requested) : null;
       version ??= (await cms.listVersions(key, locale, 1))[0] ?? null;
-      if (!version) return {kind: 'nothing', reason: `This item has no ${locale} version yet.`};
+      if (!version) return {kind: 'nothing', reason: `This item has no ${languageName(locale)} version yet.`};
       if (version.variation) {
         const base = (await cms.listVersions(key, version.locale || locale, 50)).filter((v) => !v.variation);
         const original = base.find((v) => v.status === 'published') ?? base[0];
         return {kind: 'variation', variation: version.variation, baseVersion: original?.version ?? null};
       }
 
-      const deadline = Date.now() + BUDGET_MS;
       const types = new Types(cms);
       await types.load([version.contentType, ...contentTypesIn(version)]);
       const found = collectLinks(version, types.lookup);
-      const shared = await sharedBlockLinks(found, version.locale || locale, types);
+      // Each shared block costs a few requests: once the budget is spent, check what was found.
+      const shared =
+        Date.now() < deadline ? await sharedBlockLinks(found, version.locale || locale, types, deadline) : {links: [], blocks: 0};
 
       const all = [...found, ...shared.links];
       const checked = await mapLimit(all.slice(0, MAX_LINKS), CONCURRENCY, (link) => judge(link, version.locale || locale, deadline));
+      // Host names only: paths and query strings can carry tokens.
+      if (hosts.checked.size || hosts.refused.size) {
+        logger.info('checkLinks external hosts', {checked: [...hosts.checked].sort(), refused: [...hosts.refused].sort()});
+      }
       return {
         kind: 'checked',
         result: {
           key,
           version: version.version,
           locale: version.locale || locale,
-          displayName: version.displayName || key,
+          displayName: version.displayName || 'Untitled',
           links: checked.sort(byVerdict),
           skipped: Math.max(0, all.length - MAX_LINKS),
           sharedBlocks: shared.blocks,

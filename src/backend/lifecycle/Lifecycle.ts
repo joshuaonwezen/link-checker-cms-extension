@@ -13,6 +13,7 @@ import {
 import {CmsClient} from '../lib/cms';
 import {checkKey} from '../lib/graph';
 import {ApiError} from '../lib/http';
+import {guardedFetch} from '../lib/outbound';
 import {CmsSettings, GraphSettings, normalizeSiteUrl, readSection} from '../lib/settings';
 
 function text(formData: SubmittedFormData, key: string): string {
@@ -65,14 +66,22 @@ export class Lifecycle extends AppLifecycle {
 
   private async saveSite(formData: SubmittedFormData, result: LifecycleSettingsResult) {
     const siteUrl = normalizeSiteUrl(text(formData, 'siteUrl'));
-    if (!siteUrl) return result.addError('siteUrl', 'A full URL, e.g. https://www.example.com.');
-    try {
-      const res = await fetch(siteUrl, {redirect: 'follow', signal: AbortSignal.timeout(10_000)});
-      void res.body?.cancel();
-      if (res.status >= 500) return result.addError('siteUrl', `The site answered ${res.status}.`);
-    } catch {
-      return result.addError('siteUrl', 'The site could not be reached.');
+    if (!siteUrl) {
+      return result.addError('siteUrl', "The site's public https address, by name (not a numeric address), e.g. https://www.example.com.");
     }
+    // The same guard as external links: the name must resolve to public addresses only, and so
+    // must every redirect the site answers with.
+    const answer = await guardedFetch(siteUrl, 'GET', {timeoutMs: 10_000});
+    if ('refused' in answer) {
+      return result.addError(
+        'siteUrl',
+        answer.refused === 'private'
+          ? "This address leads to a private network. Use the site's public address."
+          : 'The site redirects somewhere the app does not follow. Use the address the site ends up on.',
+      );
+    }
+    if ('failure' in answer) return result.addError('siteUrl', 'The site could not be reached.');
+    if (answer.status >= 500) return result.addError('siteUrl', `The site answered with a server error (${answer.status}).`);
     await storage.settings.put('site', {siteUrl});
     return result.addToast('success', 'Site saved.');
   }

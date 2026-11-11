@@ -6,8 +6,9 @@ sections:
         key: siteUrl
         label: Site URL
         help: >-
-          The front end for this CMS instance, e.g. https://optimizely-onboarding.vercel.app.
-          Internal links are opened there, the way a visitor would follow them.
+          The public address of the website this CMS publishes to, starting with https://,
+          e.g. https://www.example.com. Links to your own pages are opened there, the way a
+          visitor would follow them.
       - type: button
         label: Save
         action: saveSite
@@ -19,8 +20,8 @@ sections:
         key: singleKey
         label: Single key
         help: >-
-          The instance's Graph single key (CMS → Settings → API Keys). It only reads published
-          content, which is what a link needs to work for visitors. Leave blank to keep the saved one.
+          Find it in the CMS under Settings > API Keys. It can only read published content,
+          which is what visitors see. Leave blank to keep the saved one.
       - type: button
         label: Save
         action: saveGraph
@@ -32,12 +33,12 @@ sections:
         key: clientId
         label: Client ID
         help: >-
-          CMS → Settings → API Keys. Used to read the version open in the editor and to tell
-          deleted content from unpublished content.
+          Create an API client in the CMS under Settings > API Keys; read access is enough. It
+          reads the page open in the editor and tells deleted content from unpublished content.
       - type: secret
         key: clientSecret
         label: Client secret
-        help: Shown once when the API key is created. Leave blank to keep the saved one.
+        help: Shown once, when the API client is created. Leave blank to keep the saved one.
       - type: button
         label: Save
         action: saveCms

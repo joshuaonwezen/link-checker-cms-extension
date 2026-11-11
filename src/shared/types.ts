@@ -26,12 +26,14 @@ export type Verdict = 'broken' | 'warning' | 'unchecked' | 'ok';
 
 export interface CheckedLink extends FoundLink {
   verdict: Verdict;
-  /** One line, e.g. "404 on the site". */
+  /** One line in plain words, e.g. "Page not found". */
   status: string;
   /** What to do about it. */
   hint?: string;
   /** Where it really goes: the page a content link resolves to, or a redirect's target. */
   resolved?: string;
+  /** The CMS name of the content a cms://content link or reference points at, when it still exists. */
+  name?: string;
   /** A URL to open it in a new tab, when there is one. */
   openUrl?: string;
 }
