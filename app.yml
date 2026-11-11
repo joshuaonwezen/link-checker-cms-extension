@@ -1,7 +1,7 @@
 meta:
   app_id: cms_link_checker
   display_name: Link checker
-  version: 0.0.1-dev.1
+  version: 0.0.1-dev.2
   vendor: optimizely
   summary: Check every link on the page open in the editor - broken pages, deleted content and links the site silently hides.
   support_url: https://www.optimizely.com
