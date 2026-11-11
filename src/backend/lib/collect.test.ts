@@ -26,7 +26,7 @@ const KEY_B = 'fb900000000000000000000000000001';
 // The shape GET /v1/content/{key}/versions/{version} returns for an experience.
 const VERSION: VersionContent = {
   contentType: 'DynamicExperience',
-  properties: {metaTitle: {value: 'Mosey Bank'}},
+  properties: {metaTitle: {value: 'Example Bank'}},
   composition: {
     nodeType: 'experience',
     displayName: 'Homepage',

@@ -2,11 +2,11 @@ import {describe, expect, it} from 'vitest';
 
 import {isAction, PARSERS} from './validate';
 
-const KEY = '3525e1552b6f46158be2850ff6e6fb74';
+const KEY = '0f8e2d6c4b1a49e7a3c5d7f9b2e4c6a8';
 
 describe('PARSERS.checkLinks', () => {
   it('normalizes the key and keeps known fields only', () => {
-    expect(PARSERS.checkLinks({key: '3525E155-2b6f-4615-8be2-850ff6e6fb74', version: '6882', locale: 'nl', extra: 1})).toEqual({
+    expect(PARSERS.checkLinks({key: '0F8E2D6C-4b1a-49e7-a3c5-d7f9b2e4c6a8', version: '6882', locale: 'nl', extra: 1})).toEqual({
       key: KEY,
       version: '6882',
       locale: 'nl',

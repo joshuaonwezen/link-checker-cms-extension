@@ -6,7 +6,7 @@ import type {OutboundDeps} from './outbound';
 import type {LoadedSettings} from './settings';
 import type {CmsApplication} from './siteUrl';
 
-const KEY = '3525e1552b6f46158be2850ff6e6fb74';
+const KEY = '0f8e2d6c4b1a49e7a3c5d7f9b2e4c6a8';
 const PUBLIC = '93.184.216.34';
 
 // GET /v1/applications on an instance with two sites and a preview host.
