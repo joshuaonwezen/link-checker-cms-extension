@@ -30,7 +30,8 @@ export interface OutboundDeps {
   fetch: typeof fetch;
 }
 
-const systemDeps: OutboundDeps = {
+/** The runtime's own DNS and fetch. */
+export const systemDeps: OutboundDeps = {
   resolve: async (host) => (await lookup(host, {all: true})).map((a) => a.address),
   fetch: (input, init) => fetch(input, init),
 };

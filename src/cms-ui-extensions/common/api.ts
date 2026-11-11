@@ -15,6 +15,9 @@ export class CallError extends Error {
 // Shown to editors: plain words, and an admin to ask when only the settings can fix it.
 const FALLBACK_MESSAGES: Record<string, string> = {
   not_configured: 'The app is missing settings.',
+  site_unknown:
+    "This CMS has more than one site and this page's address isn't one of them. Ask a CMS admin to set the Site URL in the app settings.",
+  site_refused: "The link checker won't open this page's site address. Ask a CMS admin to check the app's settings.",
   cms_unauthorized: "The CMS turned down the app's API client. Ask a CMS admin to check the app's settings.",
   cms_rate_limited: 'The CMS is busy. Try again in a moment.',
   graph_unauthorized: "The app's key for reading published content was turned down. Ask a CMS admin to check the app's settings.",
@@ -47,6 +50,13 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Request failed.';
 }
 
+// Answers only a CMS admin can fix: shown as a warning, with no Retry.
+const ADMIN_FIXES = new Set(['not_configured', 'site_unknown', 'site_refused']);
+
 export function isNotConfigured(error: unknown): boolean {
   return error instanceof CallError && error.code === 'not_configured';
+}
+
+export function needsAdmin(error: unknown): boolean {
+  return error instanceof CallError && ADMIN_FIXES.has(error.code);
 }

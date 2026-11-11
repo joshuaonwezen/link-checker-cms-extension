@@ -1,5 +1,6 @@
 import type {Properties, CompositionNode, TypeInfo} from './collect';
 import {ApiError, requestJson} from './http';
+import type {CmsApplication} from './siteUrl';
 
 const CMS_API = 'https://api.cms.optimizely.com';
 const EXPIRY_BUFFER_MS = 30_000;
@@ -96,6 +97,13 @@ export class CmsClient {
       if (error instanceof ApiError && error.status === 404) return null;
       throw error;
     }
+  }
+
+  /** The applications in CMS Settings > Applications, with the hosts each site is served on. */
+  public async listApplications(): Promise<CmsApplication[]> {
+    const body = await this.get<{items?: CmsApplication[] | null} | CmsApplication[]>('List applications', '/v1/applications');
+    if (Array.isArray(body)) return body;
+    return Array.isArray(body?.items) ? body.items : [];
   }
 
   public async getContentType(key: string): Promise<TypeInfo | null> {

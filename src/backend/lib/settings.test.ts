@@ -15,13 +15,19 @@ describe('settings', () => {
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     expect(await loadConfig()).toEqual({
       ok: false,
-      missing: [
-        'the site address',
-        'the key for reading published content',
-        'the CMS API client ID',
-        'the CMS API client secret',
-      ],
+      missing: ['the key for reading published content', 'the CMS API client ID', 'the CMS API client secret'],
     });
+  });
+
+  it('loads without a Site URL: the site then comes from the CMS applications', async () => {
+    await storage.settings.put('graph', {singleKey: 'graph-key'});
+    await storage.settings.put('cms', {clientId: 'client', clientSecret: 'secret'});
+    expect(await loadConfig()).toEqual({
+      ok: true,
+      config: {siteUrl: '', graph: {singleKey: 'graph-key'}, cms: {clientId: 'client', clientSecret: 'secret'}},
+    });
+    await storage.settings.put('site', {siteUrl: 'https://www.example.com/'});
+    expect(await loadConfig()).toMatchObject({ok: true, config: {siteUrl: 'https://www.example.com'}});
   });
 
   it('normalizes the site URL', () => {

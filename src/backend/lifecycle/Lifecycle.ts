@@ -65,7 +65,14 @@ export class Lifecycle extends AppLifecycle {
   }
 
   private async saveSite(formData: SubmittedFormData, result: LifecycleSettingsResult) {
-    const siteUrl = normalizeSiteUrl(text(formData, 'siteUrl'));
+    const raw = text(formData, 'siteUrl');
+    // Optional: blank means each page's site comes from CMS Settings > Applications, and is
+    // guarded per request (checker.resolveSite).
+    if (!raw) {
+      await storage.settings.put('site', {siteUrl: ''});
+      return result.addToast('success', 'Saved. Links are opened on the site set for each page in CMS Settings > Applications.');
+    }
+    const siteUrl = normalizeSiteUrl(raw);
     if (!siteUrl) {
       return result.addError('siteUrl', "The site's public https address, by name (not a numeric address), e.g. https://www.example.com.");
     }

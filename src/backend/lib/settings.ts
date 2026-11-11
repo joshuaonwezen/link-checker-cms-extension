@@ -20,7 +20,10 @@ export type CmsSettings = {
 };
 
 export interface LoadedSettings {
-  /** Origin (plus optional path) without a trailing slash. */
+  /**
+   * The admin's override: origin (plus optional path) without a trailing slash. '' when not
+   * set, and then each request finds the site in the CMS's application hosts.
+   */
   siteUrl: string;
   graph: GraphConfig;
   cms: CmsConfig;
@@ -65,14 +68,14 @@ export async function loadConfig(): Promise<LoadedConfig> {
     readSection<GraphSettings>('graph'),
     readSection<CmsSettings>('cms'),
   ]);
-  const siteUrl = normalizeSiteUrl(site.siteUrl);
+  // Optional: blank means the site comes from CMS Settings > Applications.
+  const siteUrl = normalizeSiteUrl(site.siteUrl) ?? '';
   const singleKey = graph.singleKey?.trim() ?? '';
   const clientId = cms.clientId?.trim() ?? '';
   const clientSecret = cms.clientSecret?.trim() ?? '';
 
   // Editors read this list, so it names what is missing in plain words.
   const missing = [
-    !siteUrl && 'the site address',
     !singleKey && 'the key for reading published content',
     !clientId && 'the CMS API client ID',
     !clientSecret && 'the CMS API client secret',
@@ -80,5 +83,5 @@ export async function loadConfig(): Promise<LoadedConfig> {
 
   return missing.length > 0
     ? {ok: false, missing}
-    : {ok: true, config: {siteUrl: siteUrl!, graph: {singleKey}, cms: {clientId, clientSecret}}};
+    : {ok: true, config: {siteUrl, graph: {singleKey}, cms: {clientId, clientSecret}}};
 }

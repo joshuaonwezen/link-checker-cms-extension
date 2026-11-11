@@ -59,7 +59,8 @@ export type CheckOutcome =
   | {kind: 'nothing'; reason: string};
 
 export type ActionParams = {
-  checkLinks: {key: string; version: string | null; locale: string};
+  /** publicUrl: the open page's full URL as the editor reports it, used only to tell which of the CMS's sites it is on. */
+  checkLinks: {key: string; version: string | null; locale: string; publicUrl: string | null};
 };
 
 export type ActionResults = {

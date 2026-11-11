@@ -10,12 +10,29 @@ describe('PARSERS.checkLinks', () => {
       key: KEY,
       version: '6882',
       locale: 'nl',
+      publicUrl: null,
     });
   });
 
-  it('defaults a missing version and locale', () => {
-    expect(PARSERS.checkLinks({key: KEY})).toEqual({key: KEY, version: null, locale: 'en'});
-    expect(PARSERS.checkLinks({key: KEY, version: null, locale: ''})).toEqual({key: KEY, version: null, locale: 'en'});
+  it('defaults a missing version, locale and page URL', () => {
+    expect(PARSERS.checkLinks({key: KEY})).toEqual({key: KEY, version: null, locale: 'en', publicUrl: null});
+    expect(PARSERS.checkLinks({key: KEY, version: null, locale: '', publicUrl: null})).toEqual({
+      key: KEY,
+      version: null,
+      locale: 'en',
+      publicUrl: null,
+    });
+  });
+
+  it('accepts the page URL only as an https URL that parses', () => {
+    expect(PARSERS.checkLinks({key: KEY, publicUrl: 'https://www.example.com/en/about/'}).publicUrl).toBe(
+      'https://www.example.com/en/about/',
+    );
+    expect(() => PARSERS.checkLinks({key: KEY, publicUrl: 'http://www.example.com/'})).toThrow(/publicUrl: expected an https/);
+    expect(() => PARSERS.checkLinks({key: KEY, publicUrl: 'file:///etc/passwd'})).toThrow(/publicUrl/);
+    expect(() => PARSERS.checkLinks({key: KEY, publicUrl: 'https://exa mple.com/'})).toThrow(/publicUrl: not a URL/);
+    expect(() => PARSERS.checkLinks({key: KEY, publicUrl: {href: 'https://www.example.com'}})).toThrow(/publicUrl: expected text/);
+    expect(() => PARSERS.checkLinks({key: KEY, publicUrl: `https://www.example.com/${'a'.repeat(2048)}`})).toThrow(/at most 2048/);
   });
 
   it('rejects values that would reach an API path', () => {

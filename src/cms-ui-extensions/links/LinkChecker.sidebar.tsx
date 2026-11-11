@@ -22,6 +22,14 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
+/**
+ * The page's address, for the backend to tell which of the CMS's sites it is on: sent only
+ * when it is a full https URL, the only kind the backend accepts.
+ */
+function pageUrlOf(publicUrl: string | null): string | null {
+  return publicUrl && /^https:\/\//i.test(publicUrl) && publicUrl.length <= 2048 ? publicUrl : null;
+}
+
 /** The editor's item a request was made for: results never outlive a switch to another one. */
 function tagOf(key: string, version: string | null, locale: string): string {
   return `${key}|${version ?? ''}|${locale}`;
@@ -148,12 +156,12 @@ function LinkChecker({context}: {context: ExtensionContext}) {
   const lastVersion = useRef<{tag: string; version: string | null} | null>(null);
 
   const run = useCallback(
-    async (key: string, version: string | null, locale: string, tag: string) => {
+    async (key: string, version: string | null, locale: string, publicUrl: string | null, tag: string) => {
       const id = ++requestId.current;
       lastVersion.current = {tag, version};
       setBusy(true);
       try {
-        const outcome = await call(context, 'checkLinks', {key, version, locale});
+        const outcome = await call(context, 'checkLinks', {key, version, locale, publicUrl: pageUrlOf(publicUrl)});
         if (id === requestId.current) setShown({tag, outcome, error: null});
       } catch (error) {
         if (id === requestId.current) setShown((prev) => ({tag, outcome: prev?.tag === tag ? prev.outcome : null, error}));
@@ -167,13 +175,19 @@ function LinkChecker({context}: {context: ExtensionContext}) {
   // Draft edits keep the version, so this only re-runs on a switch; "Check again" covers edits.
   useEffect(() => {
     if (content?.key) {
-      void run(content.key, content.version, content.locale, tagOf(content.key, content.version, content.locale));
+      void run(
+        content.key,
+        content.version,
+        content.locale,
+        content.publicUrl,
+        tagOf(content.key, content.version, content.locale),
+      );
     } else {
       // Nothing open: drop whatever is still in flight.
       requestId.current += 1;
       setBusy(false);
     }
-  }, [content?.key, content?.version, content?.locale, run]);
+  }, [content?.key, content?.version, content?.locale, content?.publicUrl, run]);
 
   if (!ready) return <Frame busy />;
   if (!content) {
@@ -191,7 +205,7 @@ function LinkChecker({context}: {context: ExtensionContext}) {
   const result = outcome?.kind === 'checked' ? outcome.result : null;
   const again = () => {
     const version = lastVersion.current?.tag === tag ? lastVersion.current.version : content.version;
-    void run(content.key, version, content.locale, tag);
+    void run(content.key, version, content.locale, content.publicUrl, tag);
   };
 
   const original = Boolean(result && content.version && result.version !== content.version);
@@ -235,7 +249,7 @@ function LinkChecker({context}: {context: ExtensionContext}) {
               <Button
                 appearance="primary"
                 disabled={busy}
-                onClick={() => void run(content.key, outcome.baseVersion, content.locale, tag)}
+                onClick={() => void run(content.key, outcome.baseVersion, content.locale, content.publicUrl, tag)}
               >
                 Check the original page instead
               </Button>

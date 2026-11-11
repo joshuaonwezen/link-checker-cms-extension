@@ -1,12 +1,13 @@
 import {logger} from '@zaiusinc/app-sdk';
 
-import type {CheckedLink, CheckOutcome, FoundLink} from '../../shared/types';
+import type {ActionParams, CheckedLink, CheckOutcome, FoundLink} from '../../shared/types';
 import {CmsClient, type CmsItem, type CmsVersion} from './cms';
 import {collectLinks, contentKeyOf, contentTypesIn, type TypeInfo} from './collect';
 import {ActionError} from './errors';
 import {publishedItem, type PublishedItem} from './graph';
-import {guardedFetch, USER_AGENT, type Answer} from './outbound';
-import type {LoadedSettings} from './settings';
+import {guardedFetch, screen, systemDeps, USER_AGENT, type Answer, type OutboundDeps, type Refusal} from './outbound';
+import {normalizeSiteUrl, type LoadedSettings} from './settings';
+import {pickSiteUrl, siteOrigins} from './siteUrl';
 import {byVerdict, isCosmeticRedirect, judgeExternal, judgeInternal, type Judgement} from './verdict';
 
 const MAX_LINKS = 60;
@@ -18,6 +19,23 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const BUDGET_MS = 25_000;
 const KEY = /^[0-9a-f]{32}$/i;
 const MAX_COSMETIC_HOPS = 3;
+
+// Editors read these; only a CMS admin can act on them.
+const SITE_UNKNOWN =
+  "This CMS has more than one site and this page's address isn't one of them. Ask a CMS admin to set the Site URL in the app settings.";
+const SITE_REFUSED =
+  "This page's site address isn't a public https address, so the link checker won't open it. Ask a CMS admin to check the site's host in CMS Settings > Applications, or to set the Site URL in the app settings.";
+const OVERRIDE_REFUSED =
+  "The Site URL in the app settings doesn't lead to a public address any more. Ask a CMS admin to check it.";
+
+/** The CMS calls the checker makes. */
+export type CmsApi = Pick<CmsClient, 'getItem' | 'listVersions' | 'getVersion' | 'getContentType' | 'listApplications'>;
+
+export interface CheckerDeps {
+  cms?: CmsApi;
+  /** DNS and fetch for every request the checker sends to a site. */
+  outbound?: OutboundDeps;
+}
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -47,7 +65,7 @@ function once<K, V>(load: (key: K) => Promise<V>): (key: K) => Promise<V> {
 class Types {
   private readonly known = new Map<string, TypeInfo | null>();
 
-  public constructor(private readonly cms: CmsClient) {}
+  public constructor(private readonly cms: CmsApi) {}
 
   public async load(keys: Iterable<string | undefined>): Promise<void> {
     const missing = [...new Set(keys)].filter((k): k is string => Boolean(k) && !this.known.has(k!));
@@ -74,10 +92,10 @@ function languageName(locale: string): string {
   }
 }
 
-/** One request to the configured site (never anywhere else), redirects off. */
-async function answerFromSite(url: URL): Promise<Answer> {
+/** One request to the site (never anywhere else), redirects off. */
+async function answerFromSite(url: URL, fetchFn: typeof fetch): Promise<Answer> {
   try {
-    const res = await fetch(url, {
+    const res = await fetchFn(url, {
       redirect: 'manual',
       headers: {'User-Agent': USER_AGENT},
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -117,13 +135,43 @@ export function classify(target: string, siteUrl: string):
   return {type: 'external', url: url.href};
 }
 
-export interface Checker {
-  checkLinks(params: {key: string; version: string | null; locale: string}): Promise<CheckOutcome>;
+/**
+ * The site to open internal links on, for one request: the saved Site URL when there is one,
+ * else the open page's own site, or the only site, from the CMS's application hosts (see
+ * pickSiteUrl). Either way it must pass the guard a saved Site URL passes - https, a public
+ * host name, every address it resolves to public - since an application host can be
+ * misconfigured too.
+ */
+export async function resolveSite(
+  cfg: Pick<LoadedSettings, 'siteUrl' | 'cms'>,
+  publicUrl: string | null,
+  cms: Pick<CmsApi, 'listApplications'>,
+  outbound: Pick<OutboundDeps, 'resolve'> = systemDeps,
+): Promise<URL> {
+  // The override needs no list: pickSiteUrl would return it whatever the CMS says.
+  const picked = cfg.siteUrl || pickSiteUrl('', publicUrl, await siteOrigins(cfg.cms.clientId, () => cms.listApplications()));
+  if (!picked) throw new ActionError('site_unknown', SITE_UNKNOWN);
+  const refusedMessage = cfg.siteUrl ? OVERRIDE_REFUSED : SITE_REFUSED;
+  const normalized = normalizeSiteUrl(picked);
+  if (!normalized) throw new ActionError('site_refused', refusedMessage);
+  const site = new URL(normalized);
+  let refused: Refusal | null = null;
+  try {
+    refused = await screen(site, outbound.resolve, AbortSignal.timeout(REQUEST_TIMEOUT_MS));
+  } catch {
+    // The name doesn't resolve right now: each request then fails on its own, reported per link.
+  }
+  if (refused) throw new ActionError('site_refused', refusedMessage);
+  return site;
 }
 
-export function createChecker(cfg: LoadedSettings): Checker {
-  const cms = new CmsClient(cfg.cms);
-  const site = new URL(cfg.siteUrl);
+export interface Checker {
+  checkLinks(params: ActionParams['checkLinks']): Promise<CheckOutcome>;
+}
+
+export function createChecker(cfg: LoadedSettings, deps: CheckerDeps = {}): Checker {
+  const cms = deps.cms ?? new CmsClient(cfg.cms);
+  const outbound = deps.outbound ?? systemDeps;
   const hosts = {checked: new Set<string>(), refused: new Set<string>()};
   const item = once((key: string) => cms.getItem(key));
   const published = once((id: string) => {
@@ -139,102 +187,105 @@ export function createChecker(cfg: LoadedSettings): Checker {
       return undefined;
     }
   });
-
-  /** `href` (a path or a URL) on the configured site, or null when it leads anywhere else. */
-  const onSite = (href: string): URL | null => {
-    const url = parseUrl(href, site);
-    return url && url.origin === site.origin ? url : null;
-  };
-
-  const internal = once(async (path: string): Promise<Judgement> => {
-    const start = sitePage(site, path);
-    if (!start) return {verdict: 'unchecked', status: "Not checked: the address can't be read"};
-    let current = start;
-    // Follow slash and case redirects (/en/about/ -> /en/about): what counts is where they land.
-    for (let hop = 0; ; hop++) {
-      const here = `${current.pathname}${current.search}`;
-      const result = await answerFromSite(current);
-      const location = 'status' in result && result.status >= 300 && result.status < 400 ? result.location : null;
-      const next = location ? parseUrl(location, current) : null;
-      if (!location || !next || next.origin !== site.origin || hop === MAX_COSMETIC_HOPS || !isCosmeticRedirect(here, location)) {
-        return judgeInternal(here, result, site.origin);
-      }
-      current = next;
-    }
-  });
   const external = once(async (url: string) => {
     const options = {timeoutMs: REQUEST_TIMEOUT_MS, onRequest: (u: URL) => hosts.checked.add(u.hostname)};
-    let result = await guardedFetch(url, 'HEAD', options);
+    let result = await guardedFetch(url, 'HEAD', options, outbound);
     // Plenty of sites refuse HEAD; ask again the way a browser would.
-    if ('status' in result && [400, 403, 405, 501].includes(result.status)) result = await guardedFetch(url, 'GET', options);
+    if ('status' in result && [400, 403, 405, 501].includes(result.status)) result = await guardedFetch(url, 'GET', options, outbound);
     if ('refused' in result) hosts.refused.add(result.host);
     return judgeExternal(result);
   });
 
-  async function judgePage(path: string): Promise<Judgement & {openUrl?: string}> {
-    const j = await internal(path);
-    // A redirect off the site resolves to a full URL; everything else is a site path.
-    const openUrl = j.resolved && !j.resolved.startsWith('/') ? j.resolved : sitePage(site, j.resolved ?? path)?.href;
-    return {...j, openUrl};
-  }
+  /** The checks that open pages on `site`, the site resolved for this request. */
+  function onSite(site: URL) {
+    /** `href` (a path or a URL) on the site, or null when it leads anywhere else. */
+    const within = (href: string): URL | null => {
+      const url = parseUrl(href, site);
+      return url && url.origin === site.origin ? url : null;
+    };
 
-  async function judgeContent(link: FoundLink, key: string, locale: string): Promise<Partial<CheckedLink> & Judgement> {
-    const isLink = link.kind === 'link';
-    if (!(await item(key))) {
-      return isLink
-        ? {
-            verdict: 'broken',
-            status: 'Deleted',
-            hint: "It points at content that was deleted, so the site doesn't show the link. Pick the target again, or remove the link.",
-          }
-        : {verdict: 'broken', status: 'Deleted', hint: 'This leaves a gap on the page. Remove it, or pick other content.'};
-    }
-    const live: PublishedItem | null = await published(`${key}|${locale}`);
-    if (!live) {
-      const name = await draftName(`${key}|${locale}`);
-      const language = languageName(locale);
-      return isLink
-        ? {
-            verdict: 'broken',
-            status: 'Not published',
-            name,
-            hint: `The site hides links to pages visitors can't see. Publish it in ${language}, or link to another page.`,
-          }
-        : {verdict: 'warning', status: 'Not published', name, hint: `Visitors don't see it until it is published in ${language}.`};
-    }
-    const name = live.displayName;
-    if (live.url && (isLink || live.isPage)) {
-      const url = onSite(live.url);
-      if (url) {
-        const path = `${url.pathname}${url.search}`;
-        return {...(await judgePage(path)), name, resolved: path};
+    const internal = once(async (path: string): Promise<Judgement> => {
+      const start = sitePage(site, path);
+      if (!start) return {verdict: 'unchecked', status: "Not checked: the address can't be read"};
+      let current = start;
+      // Follow slash and case redirects (/en/about/ -> /en/about): what counts is where they land.
+      for (let hop = 0; ; hop++) {
+        const here = `${current.pathname}${current.search}`;
+        const result = await answerFromSite(current, outbound.fetch);
+        const location = 'status' in result && result.status >= 300 && result.status < 400 ? result.location : null;
+        const next = location ? parseUrl(location, current) : null;
+        if (!location || !next || next.origin !== site.origin || hop === MAX_COSMETIC_HOPS || !isCosmeticRedirect(here, location)) {
+          return judgeInternal(here, result, site.origin);
+        }
+        current = next;
       }
-      // The CMS gives the page an address on another host, and the site links there as is.
-      const href = parseUrl(live.url)?.href;
-      if (!href) return {verdict: 'unchecked', status: "Not checked: the page's address can't be read", name};
-      return {...(await external(href)), name, resolved: href, openUrl: href};
-    }
-    if (isLink) return {verdict: 'warning', status: 'Not a page', name, hint: 'Only pages can be linked to. Pick a page instead.'};
-    return {verdict: 'ok', status: 'Published', name};
-  }
+    });
 
-  async function judge(link: FoundLink, locale: string, deadline: number): Promise<CheckedLink> {
-    if (Date.now() > deadline) {
-      return {...link, verdict: 'unchecked', status: 'Not checked: ran out of time', hint: 'Check again to pick up the rest.'};
+    async function judgePage(path: string): Promise<Judgement & {openUrl?: string}> {
+      const j = await internal(path);
+      // A redirect off the site resolves to a full URL; everything else is a site path.
+      const openUrl = j.resolved && !j.resolved.startsWith('/') ? j.resolved : sitePage(site, j.resolved ?? path)?.href;
+      return {...j, openUrl};
     }
-    const target = classify(link.target, cfg.siteUrl);
-    switch (target.type) {
-      case 'content':
-        return {...link, ...(await judgeContent(link, target.key, locale))};
-      case 'internal':
-        return {...link, ...(await judgePage(target.path))};
-      case 'external':
-        return {...link, ...(await external(target.url)), openUrl: target.url};
-      case 'dam':
-        return {...link, verdict: 'ok', status: 'From the asset library'};
-      case 'relative':
-        return {...link, verdict: 'warning', status: 'Incomplete address', hint: 'Start it with / or https:// so it works on every page.'};
+
+    async function judgeContent(link: FoundLink, key: string, locale: string): Promise<Partial<CheckedLink> & Judgement> {
+      const isLink = link.kind === 'link';
+      if (!(await item(key))) {
+        return isLink
+          ? {
+              verdict: 'broken',
+              status: 'Deleted',
+              hint: "It points at content that was deleted, so the site doesn't show the link. Pick the target again, or remove the link.",
+            }
+          : {verdict: 'broken', status: 'Deleted', hint: 'This leaves a gap on the page. Remove it, or pick other content.'};
+      }
+      const live: PublishedItem | null = await published(`${key}|${locale}`);
+      if (!live) {
+        const name = await draftName(`${key}|${locale}`);
+        const language = languageName(locale);
+        return isLink
+          ? {
+              verdict: 'broken',
+              status: 'Not published',
+              name,
+              hint: `The site hides links to pages visitors can't see. Publish it in ${language}, or link to another page.`,
+            }
+          : {verdict: 'warning', status: 'Not published', name, hint: `Visitors don't see it until it is published in ${language}.`};
+      }
+      const name = live.displayName;
+      if (live.url && (isLink || live.isPage)) {
+        const url = within(live.url);
+        if (url) {
+          const path = `${url.pathname}${url.search}`;
+          return {...(await judgePage(path)), name, resolved: path};
+        }
+        // The CMS gives the page an address on another host, and the site links there as is.
+        const href = parseUrl(live.url)?.href;
+        if (!href) return {verdict: 'unchecked', status: "Not checked: the page's address can't be read", name};
+        return {...(await external(href)), name, resolved: href, openUrl: href};
+      }
+      if (isLink) return {verdict: 'warning', status: 'Not a page', name, hint: 'Only pages can be linked to. Pick a page instead.'};
+      return {verdict: 'ok', status: 'Published', name};
     }
+
+    return async function judge(link: FoundLink, locale: string, deadline: number): Promise<CheckedLink> {
+      if (Date.now() > deadline) {
+        return {...link, verdict: 'unchecked', status: 'Not checked: ran out of time', hint: 'Check again to pick up the rest.'};
+      }
+      const target = classify(link.target, site.href);
+      switch (target.type) {
+        case 'content':
+          return {...link, ...(await judgeContent(link, target.key, locale))};
+        case 'internal':
+          return {...link, ...(await judgePage(target.path))};
+        case 'external':
+          return {...link, ...(await external(target.url)), openUrl: target.url};
+        case 'dam':
+          return {...link, verdict: 'ok', status: 'From the asset library'};
+        case 'relative':
+          return {...link, verdict: 'warning', status: 'Incomplete address', hint: 'Start it with / or https:// so it works on every page.'};
+      }
+    };
   }
 
   async function sharedBlockLinks(found: FoundLink[], locale: string, types: Types, deadline: number) {
@@ -263,7 +314,7 @@ export function createChecker(cfg: LoadedSettings): Checker {
   }
 
   return {
-    async checkLinks({key, version: requested, locale: editorLocale}) {
+    async checkLinks({key, version: requested, locale: editorLocale, publicUrl}) {
       const deadline = Date.now() + BUDGET_MS;
       if (!KEY.test(key)) throw new ActionError('invalid_input', 'key: not a CMS content key.');
       const it = await item(key);
@@ -289,7 +340,11 @@ export function createChecker(cfg: LoadedSettings): Checker {
         Date.now() < deadline ? await sharedBlockLinks(found, version.locale || locale, types, deadline) : {links: [], blocks: 0};
 
       const all = [...found, ...shared.links];
-      const checked = await mapLimit(all.slice(0, MAX_LINKS), CONCURRENCY, (link) => judge(link, version.locale || locale, deadline));
+      // Resolved per request, and only when there is something to open on it.
+      const judge = all.length > 0 ? onSite(await resolveSite(cfg, publicUrl, cms, outbound)) : null;
+      const checked = judge
+        ? await mapLimit(all.slice(0, MAX_LINKS), CONCURRENCY, (link) => judge(link, version.locale || locale, deadline))
+        : [];
       // Host names only: paths and query strings can carry tokens.
       if (hosts.checked.size || hosts.refused.size) {
         logger.info('checkLinks external hosts', {checked: [...hosts.checked].sort(), refused: [...hosts.refused].sort()});

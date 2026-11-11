@@ -6,9 +6,9 @@ sections:
         key: siteUrl
         label: Site URL
         help: >-
-          The public address of the website this CMS publishes to, starting with https://,
-          e.g. https://www.example.com. Links to your own pages are opened there, the way a
-          visitor would follow them.
+          Optional. Leave blank to use the site address set for the page's application in CMS
+          Settings > Applications. Set it only to override that. When set, it must be the site's
+          public https address, e.g. https://www.example.com, and every page is checked there.
       - type: button
         label: Save
         action: saveSite
@@ -20,8 +20,8 @@ sections:
         key: singleKey
         label: Single key
         help: >-
-          Find it in the CMS under Settings > API Keys. It can only read published content,
-          which is what visitors see. Leave blank to keep the saved one.
+          Required. Find it in the CMS under Settings > API Keys. It reads only published
+          content, which is what visitors see. Leave blank to keep the saved one.
       - type: button
         label: Save
         action: saveGraph
@@ -33,12 +33,13 @@ sections:
         key: clientId
         label: Client ID
         help: >-
-          Create an API client in the CMS under Settings > API Keys; read access is enough. It
-          reads the page open in the editor and tells deleted content from unpublished content.
+          Required. Create an API client in the CMS under Settings > API Keys; read access is
+          enough. It reads the version open in the editor, tells deleted content from
+          unpublished content and reads the site hosts in Settings > Applications.
       - type: secret
         key: clientSecret
         label: Client secret
-        help: Shown once, when the API client is created. Leave blank to keep the saved one.
+        help: Required. Shown once, when the API client is created. Leave blank to keep the saved one.
       - type: button
         label: Save
         action: saveCms
