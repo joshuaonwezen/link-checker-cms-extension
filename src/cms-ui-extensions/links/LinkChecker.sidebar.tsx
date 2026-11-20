@@ -1,4 +1,4 @@
-import {Alert, Button, Disclosure, DisclosureContent, DisclosureTrigger, Group, Separator, Text} from '@optiaxiom/react';
+import {Alert, Button, Disclosure, DisclosureContent, DisclosureTrigger, Group, Text} from '@optiaxiom/react';
 import {register, type ExtensionContext} from '@optimizely/cms-extensibility-sdk';
 import type {CheckedLink, CheckOutcome, CheckResult, Verdict} from '@shared/types';
 import {useCallback, useEffect, useRef, useState} from 'react';
@@ -6,9 +6,10 @@ import {useCallback, useEffect, useRef, useState} from 'react';
 import {call} from '../common/api';
 import {Frame} from '../common/Frame';
 import {OpenLink} from '../common/OpenLink';
+import {Chip, Code, count, type ChipState} from '../common/ui';
 import {useContent} from '../common/useContent';
 
-// Problems first and open; what needs no action is collapsed.
+// Problems first and open; what needs no action is folded away.
 const GROUPS: Array<{verdict: Verdict; title: string; collapsed: boolean}> = [
   {verdict: 'broken', title: 'Broken', collapsed: false},
   {verdict: 'warning', title: 'Worth a look', collapsed: false},
@@ -16,11 +17,16 @@ const GROUPS: Array<{verdict: Verdict; title: string; collapsed: boolean}> = [
   {verdict: 'ok', title: 'Fine', collapsed: true},
 ];
 
-const MONO = {fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', overflowWrap: 'anywhere'} as const;
+const STATE: Record<Verdict, ChipState> = {broken: 'bad', warning: 'warn', unchecked: 'neutral', ok: 'good'};
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`;
-}
+const SUMMARY: Record<Verdict, (n: number) => string> = {
+  broken: (n) => `${n} broken`,
+  warning: (n) => `${n} worth a look`,
+  unchecked: (n) => `${n} not checked`,
+  ok: (n) => `${n} fine`,
+};
+
+const TIME = new Intl.DateTimeFormat('en-GB', {hour: '2-digit', minute: '2-digit'});
 
 /**
  * The page's address, for the backend to tell which of the CMS's sites it is on: sent only
@@ -46,44 +52,113 @@ function describeLink(link: CheckedLink): {lead: string; detail?: string} {
   return {lead, detail: address && address !== lead ? address : undefined};
 }
 
+/**
+ * The status as a short chip, and the rest of it as a line under it: "Not checked: points to
+ * a private address" becomes "Not checked" + "Points to a private address", and "Redirects to
+ * /x" becomes "Redirects" (its hint says where to).
+ */
+function splitStatus(status: string): {label: string; more?: string} {
+  // The hint already names where it goes ("Link to /x directly").
+  if (/^Redirects to /.test(status)) return {label: 'Redirects'};
+  const at = status.indexOf(': ');
+  if (at < 0) return {label: status};
+  const rest = status.slice(at + 2);
+  return {label: status.slice(0, at), more: rest.charAt(0).toUpperCase() + rest.slice(1)};
+}
+
 function LinkRow({link}: {link: CheckedLink}) {
   const {lead, detail} = describeLink(link);
+  const {label, more} = splitStatus(link.status);
   return (
-    <Group flexDirection="column" gap="2">
-      <Text fontSize="sm" fontWeight="600" style={{overflowWrap: 'anywhere'}}>
-        {lead}
-      </Text>
-      {detail && (
-        <Text color="fg.secondary" fontSize="xs" style={MONO}>
-          {detail}
-        </Text>
+    <div className="ui-item">
+      <div className="ui-row" style={{minHeight: 24}}>
+        <span className="ui-name" title={lead}>
+          {lead}
+        </span>
+        {link.openUrl && (
+          <OpenLink appearance="subtle" iconOnly size="sm" url={link.openUrl}>
+            Open
+          </OpenLink>
+        )}
+      </div>
+      {link.verdict !== 'ok' && (
+        <div>
+          <Chip label={label} state={STATE[link.verdict]} />
+        </div>
       )}
-      <Text color="fg.secondary" fontSize="xs">
+      {detail && <Code wrap>{detail}</Code>}
+      <span className="ui-faint ui-small">
         {link.kind === 'reference' ? 'Shown on the page' : 'Link'} · {link.where || 'Page properties'}
-      </Text>
-      <Text fontSize="xs" fontWeight="600">
-        {link.status}
-      </Text>
-      {link.hint && (
-        <Text color="fg.secondary" fontSize="xs">
-          {link.hint}
-        </Text>
+      </span>
+      {link.verdict !== 'ok' && (more || link.hint) && (
+        <span className="ui-muted ui-small">{[more, link.hint].filter(Boolean).join('. ')}</span>
       )}
-      {link.openUrl && (
-        <OpenLink appearance="subtle" size="sm" url={link.openUrl}>
-          Open
-        </OpenLink>
-      )}
-    </Group>
+    </div>
   );
 }
 
 function LinkList({links}: {links: CheckedLink[]}) {
   return (
-    <Group flexDirection="column" gap="12" pt="8">
+    <div>
       {links.map((link, i) => (
         <LinkRow key={`${link.target}|${link.where}|${i}`} link={link} />
       ))}
+    </div>
+  );
+}
+
+/** One verdict's links in a card: problems open, the rest folded away. */
+function GroupCard({title, links, collapsed}: {title: string; links: CheckedLink[]; collapsed: boolean}) {
+  if (collapsed) {
+    return (
+      <div className="ui-card" data-folded="">
+        <Disclosure>
+          <DisclosureTrigger>
+            <Text fontSize="sm" fontWeight="600">
+              {title} · {links.length}
+            </Text>
+          </DisclosureTrigger>
+          <DisclosureContent>
+            <div style={{padding: '4px 8px 8px 12px'}}>
+              <LinkList links={links} />
+            </div>
+          </DisclosureContent>
+        </Disclosure>
+      </div>
+    );
+  }
+  return (
+    <div className="ui-card">
+      <div className="ui-card-title">
+        <span>{title}</span>
+        <span className="ui-faint ui-small">{count(links.length, 'link')}</span>
+      </div>
+      <LinkList links={links} />
+    </div>
+  );
+}
+
+function Summary({result, busy, onCheckAgain}: {result: CheckResult; busy: boolean; onCheckAgain: () => void}) {
+  const tally = GROUPS.map((g) => ({verdict: g.verdict, n: result.links.filter((l) => l.verdict === g.verdict).length})).filter(
+    (t) => t.n > 0,
+  );
+  const problems = result.links.some((l) => l.verdict === 'broken' || l.verdict === 'warning');
+  return (
+    <Group flexDirection="column" gap="4">
+      <Group alignItems="start" gap="8" justifyContent="space-between">
+        <div className="ui-chips">
+          {!problems && result.links.length > 0 && <Chip label="Nothing to fix" state="good" />}
+          {tally
+            .filter((t) => problems || t.verdict !== 'ok')
+            .map((t) => (
+              <Chip key={t.verdict} label={SUMMARY[t.verdict](t.n)} state={STATE[t.verdict]} />
+            ))}
+        </div>
+        <Button appearance="subtle" disabled={busy} onClick={onCheckAgain} size="sm">
+          Check again
+        </Button>
+      </Group>
+      <span className="ui-faint ui-small">Checked at {TIME.format(new Date(result.checkedAt))}</span>
     </Group>
   );
 }
@@ -96,46 +171,18 @@ function Results({result}: {result: CheckResult}) {
       </Alert>
     );
   }
-
-  const groups = GROUPS.map((g) => ({...g, links: result.links.filter((l) => l.verdict === g.verdict)})).filter(
-    (g) => g.links.length > 0,
-  );
-  const problems = result.links.some((l) => l.verdict === 'broken' || l.verdict === 'warning');
-
   return (
     <Group flexDirection="column" gap="12">
-      {!problems && (
-        <Alert intent="success">
-          <Text fontSize="sm">Nothing to fix on this version.</Text>
-        </Alert>
-      )}
-      {groups.map((g) => (
-        <Group flexDirection="column" gap="8" key={g.verdict}>
-          <Separator />
-          {g.collapsed ? (
-            <Disclosure>
-              <DisclosureTrigger>
-                {g.title} ({g.links.length})
-              </DisclosureTrigger>
-              <DisclosureContent>
-                <LinkList links={g.links} />
-              </DisclosureContent>
-            </Disclosure>
-          ) : (
-            <>
-              <Text fontSize="sm" fontWeight="600">
-                {g.title} ({g.links.length})
-              </Text>
-              <LinkList links={g.links} />
-            </>
-          )}
-        </Group>
-      ))}
+      {GROUPS.map((g) => ({...g, links: result.links.filter((l) => l.verdict === g.verdict)}))
+        .filter((g) => g.links.length > 0)
+        .map((g) => (
+          <GroupCard collapsed={g.collapsed} key={g.verdict} links={g.links} title={g.title} />
+        ))}
       {result.skipped > 0 && (
-        <Text color="fg.tertiary" fontSize="xs">
-          {result.skipped === 1 ? '1 more link wasn’t' : `${result.skipped} more links weren’t`} checked: the sidebar
-          checks the first 60.
-        </Text>
+        <span className="ui-faint ui-small">
+          {result.skipped === 1 ? '1 more link wasn’t' : `${result.skipped} more links weren’t`} checked: the sidebar checks
+          the first 60.
+        </span>
       )}
     </Group>
   );
@@ -210,28 +257,17 @@ function LinkChecker({context}: {context: ExtensionContext}) {
 
   const original = Boolean(result && content.version && result.version !== content.version);
   const subtitle = result
-    ? `${original ? 'Original page: ' : ''}${plural(result.links.length, 'link')} checked${
-        result.sharedBlocks ? `, across the page and ${plural(result.sharedBlocks, 'shared block')}` : ''
+    ? `${original ? 'Original page: ' : ''}${count(result.links.length, 'link')} checked${
+        result.sharedBlocks ? `, across the page and ${count(result.sharedBlocks, 'shared block')}` : ''
       }`
     : busy && !outcome
-      ? 'Opening every link on the page...'
+      ? 'Opening every link on the page…'
       : undefined;
 
   return (
     <Frame busy={busy} error={current?.error} heading={result?.displayName} onRetry={again} subtitle={subtitle}>
-      {outcome && outcome.kind !== 'variation' && (
-        <Group alignItems="center" gap="8" justifyContent="space-between">
-          <Button appearance="primary" disabled={busy} onClick={again}>
-            Check again
-          </Button>
-          {result && (
-            <Text color="fg.tertiary" fontSize="xs">
-              Checked {new Date(result.checkedAt).toLocaleTimeString()}
-            </Text>
-          )}
-        </Group>
-      )}
-      <div style={{opacity: busy && outcome ? 0.6 : 1, transition: 'opacity 120ms'}}>
+      <Group flexDirection="column" gap="12" style={{opacity: busy && outcome ? 0.6 : 1, transition: 'opacity 120ms'}}>
+        {result && <Summary busy={busy} onCheckAgain={again} result={result} />}
         {outcome?.kind === 'nothing' && (
           <Alert intent="information">
             <Text fontSize="sm">{outcome.reason}</Text>
@@ -257,7 +293,7 @@ function LinkChecker({context}: {context: ExtensionContext}) {
           </Group>
         )}
         {result && <Results result={result} />}
-      </div>
+      </Group>
     </Frame>
   );
 }

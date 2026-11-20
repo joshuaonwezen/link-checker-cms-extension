@@ -18,6 +18,7 @@ Documentation: https://opti.joshuaonwezen.dev/demo/cms-ui-extensions#link-checke
   - **External links** are opened through the outbound guard (see [Security](#security)). A site that refuses automated checks is listed as "couldn't check", not as broken.
 - Results are grouped: **Broken** and **Worth a look** open, **Couldn't check** and **Fine** folded away. Each row shows the link text or the content's name, the address, where it sits ("Product cards > Savings card > Link URL"), a status in plain words and a hint.
 - **Check again** re-runs it. Saving a draft keeps the version, so the sidebar doesn't re-run on its own.
+- An open icon on every link with an address. The CMS doesn't let extensions open new tabs, so a click copies the link and says so; right-click › Open link in new tab opens it (see [Limits](#limits)).
 
 ## Setup
 1. Install the app on your CMS instance from the OCP App Directory (or with the CLI, see [Deploy](#deploy)).
@@ -48,6 +49,7 @@ Common setup problems and the sidebar messages they cause: https://opti.joshuaon
 ## Limits
 - **Variations can't be read.** The CMS API returns a variation's blocks without their values, so on a variation the sidebar says so and offers to check the original page.
 - **The extension only knows which item is open** (key, version, language and page address), and gets no CMS token. That is why the app needs its own API client.
+- **Extensions can't open new tabs.** The CMS loads extensions in a sandboxed frame without `allow-popups`, so the open icon is a real link that copies itself on a plain click. Once the CMS allows popups, a plain click opens it.
 - **Up to 60 links per check**, within about 25 seconds. Shared blocks are read one level deep, up to 25 of them. The sidebar says how many links it skipped, and lists links it ran out of time for as not checked.
 - **Only published content counts** for links to CMS content, because that is what visitors see.
 - **A shared block opened on its own has no page address.** On a CMS with several sites, checking it needs the Site URL setting.

@@ -2,11 +2,12 @@ import {Alert, AxiomProvider, Box, Button, Group, Heading, Spinner, Text} from '
 import type {ReactNode} from 'react';
 
 import {errorMessage, isNotConfigured, needsAdmin} from './api';
+import {STYLE} from './ui';
 
 /**
  * The sidebar chrome: the open page's name and one context line (never the extension's
  * name - the CMS already shows that above the panel), a busy spinner and one place for
- * load errors, with Retry.
+ * load errors, with Retry. It also carries the shared look (ui.tsx) for everything inside.
  */
 export function Frame({
   heading,
@@ -25,7 +26,8 @@ export function Frame({
 }) {
   return (
     <AxiomProvider>
-      <Box p="12">
+      <style>{STYLE}</style>
+      <Box className="ui" p="12">
         <Group flexDirection="column" gap="12">
           {(heading || subtitle || busy) && (
             <Group alignItems="start" gap="8" justifyContent="space-between">

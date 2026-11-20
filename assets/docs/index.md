@@ -28,7 +28,7 @@ On each check the app uses the Site URL setting when it is filled in. Otherwise 
 - **Automated requests allowed.** Checks come from a server with `OptimizelyCmsLinkChecker` in the user agent. Bot protection or a login in front of the site makes every result "The site refused the check".
 
 ## Using it
-Open a page and choose the **Link checker** tab on the right-hand rail. Broken links and links worth a look come first, each with where it sits on the page and what to do; links it couldn't check and links that are fine are folded away. Saving a draft doesn't re-run it, so press **Check again** after editing.
+Open a page and choose the **Link checker** tab on the right-hand rail. Broken links and links worth a look come first, each with where it sits on the page and what to do; links it couldn't check and links that are fine are folded away. Saving a draft doesn't re-run it, so press **Check again** after editing. The open icon next to a link copies it, because the CMS doesn't let extensions open new tabs: paste it into a new tab, or right-click the icon and choose Open link in new tab.
 
 ## Limits
 - Variations can't be read through the CMS API, so on a variation the sidebar offers to check the original page.
